@@ -3,7 +3,7 @@ import type { Database } from "./database.types"
 import type { NutritionLog } from "../types"
 
 // Определяем тип UserRole
-export type UserRole = "user" | "admin"
+export type UserRole = "user" | "admin" | "moderator"
 
 // Переменные из .env файла
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string
@@ -16,6 +16,38 @@ if (!supabaseUrl || !supabaseAnonKey) {
 
 // Создаем клиент Supabase с типизацией
 export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey)
+
+// Типы для базы данных
+export interface User {
+  id: string
+  email: string
+  name?: string
+  role: "user" | "moderator" | "admin"
+  is_blocked: boolean
+  weight?: number
+  height?: number
+  goal?: string
+  created_at: string
+}
+
+export interface Course {
+  id: string
+  title: string
+  description: string
+  difficulty: "beginner" | "intermediate" | "advanced"
+  duration_weeks: number
+  is_published: boolean
+  created_at: string
+}
+
+export interface ChatMessage {
+  id: string
+  user_id: string
+  content: string
+  is_approved: boolean
+  created_at: string
+  user?: User
+}
 
 // Аутентификация: вход по email/паролю
 export async function signIn(email: string, password: string) {
@@ -503,7 +535,14 @@ export async function getCourseEnrollmentCount(courseId: string) {
 // Добавить в конец файла следующие функции для админ-панели:
 
 // Обновление роли пользователя (только для админов)
-export async function updateUserRole(userId: string, newRole: UserRole) {
+export async function getAllUsers() {
+  const { data, error } = await supabase.from("users").select("*").order("created_at", { ascending: false })
+
+  return { data, error }
+}
+
+// Обновление роли пользователя (только для админов)
+export async function updateUserRole(userId: string, newRole: "user" | "moderator" | "admin") {
   const { data, error } = await supabase.from("users").update({ role: newRole }).eq("id", userId).select().single()
 
   return { data, error }
@@ -524,29 +563,99 @@ export async function updateUserStatus(userId: string, isBlocked: boolean) {
 // Обновление данных пользователя админом
 export async function updateUserByAdmin(
   userId: string,
-  updates: Partial<{
-    username: string
-    email: string
-    full_name: string
-    weight: number
-    height: number
-    goal: string
-  }>,
+  updates: {
+    username?: string
+    email?: string
+    full_name?: string
+    weight?: number
+    height?: number
+    goal?: string
+  },
 ) {
   const { data, error } = await supabase.from("users").update(updates).eq("id", userId).select().single()
 
   return { data, error }
 }
 
+// Удаление пользователя (полное удаление)
+export async function deleteUser(userId: string) {
+  // Сначала удаляем связанные данные
+  await supabase.from("user_courses").delete().eq("user_id", userId)
+  await supabase.from("user_progress").delete().eq("user_id", userId)
+  await supabase.from("course_favorites").delete().eq("user_id", userId)
+  await supabase.from("nutrition_logs").delete().eq("user_id", userId)
+  await supabase.from("user_achievements").delete().eq("user_id", userId)
+  await supabase.from("chat_messages").delete().eq("user_id", userId)
+
+  // Затем удаляем самого пользователя
+  const { error } = await supabase.from("users").delete().eq("id", userId)
+
+  return { error }
+}
+
+// Получение всех сообщений чата для модерации
+export async function getAllChatMessages() {
+  const { data, error } = await supabase
+    .from("chat_messages")
+    .select(`
+      id,
+      content,
+      created_at,
+      is_moderated,
+      course_id,
+      user_id,
+      users!inner(
+        id,
+        username,
+        avatar_url,
+        role,
+        email,
+        created_at
+      )
+    `)
+    .order("created_at", { ascending: false })
+
+  return { data, error }
+}
+
+// Одобрение сообщения
+export async function approveMessage(messageId: string) {
+  const { data, error } = await supabase
+    .from("chat_messages")
+    .update({ is_moderated: true })
+    .eq("id", messageId)
+    .select()
+    .single()
+
+  return { data, error }
+}
+
+// Удаление сообщения
+export async function deleteMessage(messageId: string) {
+  const { error } = await supabase.from("chat_messages").delete().eq("id", messageId)
+
+  return { error }
+}
+
 // Создание нового курса
 export async function createCourse(courseData: {
   title: string
   description: string
-  image_url: string
+  image_url?: string
   level: "beginner" | "intermediate" | "advanced"
   duration: number
+  is_active?: boolean
 }) {
-  const { data, error } = await supabase.from("courses").insert([courseData]).select().single()
+  const { data, error } = await supabase
+    .from("courses")
+    .insert([
+      {
+        ...courseData,
+        is_active: courseData.is_active ?? true,
+      },
+    ])
+    .select()
+    .single()
 
   return { data, error }
 }
@@ -554,14 +663,14 @@ export async function createCourse(courseData: {
 // Обновление курса
 export async function updateCourse(
   courseId: string,
-  updates: Partial<{
-    title: string
-    description: string
-    image_url: string
-    level: "beginner" | "intermediate" | "advanced"
-    duration: number
-    is_active: boolean
-  }>,
+  updates: {
+    title?: string
+    description?: string
+    image_url?: string
+    level?: "beginner" | "intermediate" | "advanced"
+    duration?: number
+    is_active?: boolean
+  },
 ) {
   const { data, error } = await supabase.from("courses").update(updates).eq("id", courseId).select().single()
 
@@ -570,6 +679,14 @@ export async function updateCourse(
 
 // Удаление курса
 export async function deleteCourse(courseId: string) {
+  // Сначала удаляем связанные данные
+  await supabase.from("user_courses").delete().eq("course_id", courseId)
+  await supabase.from("user_progress").delete().eq("course_id", courseId)
+  await supabase.from("course_favorites").delete().eq("course_id", courseId)
+  await supabase.from("chat_messages").delete().eq("course_id", courseId)
+  await supabase.from("workouts").delete().eq("course_id", courseId)
+
+  // Затем удаляем сам курс
   const { error } = await supabase.from("courses").delete().eq("id", courseId)
 
   return { error }
@@ -603,4 +720,84 @@ export async function createExercise(exerciseData: {
   const { data, error } = await supabase.from("exercises").insert([exerciseData]).select().single()
 
   return { data, error }
+}
+
+// Функции для работы с пользователями
+export const userService = {
+  async getUsers() {
+    const { data, error } = await supabase.from("users").select("*").order("created_at", { ascending: false })
+
+    if (error) throw error
+    return data
+  },
+
+  async updateUser(id: string, updates: Partial<User>) {
+    const { data, error } = await supabase.from("users").update(updates).eq("id", id).select()
+
+    if (error) throw error
+    return data[0]
+  },
+
+  async blockUser(id: string, blocked: boolean) {
+    return this.updateUser(id, { is_blocked: blocked })
+  },
+}
+
+// Функции для работы с курсами
+export const courseService = {
+  async getCourses() {
+    const { data, error } = await supabase.from("courses").select("*").order("created_at", { ascending: false })
+
+    if (error) throw error
+    return data
+  },
+
+  async createCourse(course: Omit<Course, "id" | "created_at">) {
+    const { data, error } = await supabase.from("courses").insert(course).select()
+
+    if (error) throw error
+    return data[0]
+  },
+
+  async updateCourse(id: string, updates: Partial<Course>) {
+    const { data, error } = await supabase.from("courses").update(updates).eq("id", id).select()
+
+    if (error) throw error
+    return data[0]
+  },
+
+  async deleteCourse(id: string) {
+    const { error } = await supabase.from("courses").delete().eq("id", id)
+
+    if (error) throw error
+  },
+}
+
+// Функции для работы с сообщениями чата
+export const chatService = {
+  async getMessages() {
+    const { data, error } = await supabase
+      .from("chat_messages")
+      .select(`
+        *,
+        user:users(name, email)
+      `)
+      .order("created_at", { ascending: false })
+
+    if (error) throw error
+    return data
+  },
+
+  async approveMessage(id: string) {
+    const { data, error } = await supabase.from("chat_messages").update({ is_approved: true }).eq("id", id).select()
+
+    if (error) throw error
+    return data[0]
+  },
+
+  async deleteMessage(id: string) {
+    const { error } = await supabase.from("chat_messages").delete().eq("id", id)
+
+    if (error) throw error
+  },
 }
