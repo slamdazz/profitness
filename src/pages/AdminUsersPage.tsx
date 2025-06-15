@@ -1,15 +1,15 @@
 "use client"
 
+import type React from "react"
 import { useState, useEffect } from "react"
 import { Layout } from "../components/layout/Layout"
 import { Button } from "../components/ui/Button"
 import { Input } from "../components/ui/Input"
-import { Search, Filter, User, Edit, Lock } from "lucide-react"
-import type { User as UserType, UserRole } from "../types"
+import { Search, Filter, User, Edit, Lock, Trash2 } from "lucide-react"
+import type { User as UserType } from "../types"
 import { useAuthStore } from "../store/authStore"
 import { Navigate } from "react-router-dom"
-import { supabase } from "../lib/supabase"
-import { EditUserModal } from "../components/modals/EditUserModal"
+import { getAllUsers, updateUserByAdmin, updateUserRole, updateUserStatus, deleteUser } from "../lib/supabase"
 
 export const AdminUsersPage = () => {
   const { user } = useAuthStore()
@@ -21,17 +21,20 @@ export const AdminUsersPage = () => {
   const [isLoading, setIsLoading] = useState(true)
   const [showFilters, setShowFilters] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [selectedUser, setSelectedUser] = useState<UserType | null>(null)
-  const [isEditModalOpen, setIsEditModalOpen] = useState(false)
-  const [shouldNavigate, setShouldNavigate] = useState(false)
+  const [editingUser, setEditingUser] = useState<UserType | null>(null)
+  const [showEditModal, setShowEditModal] = useState(false)
+  const [isAdmin, setIsAdmin] = useState(false)
 
   useEffect(() => {
-    if (!user || user.role !== "admin") {
-      setShouldNavigate(true)
+    if (user && user.role === "admin") {
+      setIsAdmin(true)
+    } else {
+      setIsAdmin(false)
     }
   }, [user])
 
-  if (shouldNavigate) {
+  // Проверяем доступ
+  if (!isAdmin) {
     return <Navigate to="/" />
   }
 
@@ -40,7 +43,7 @@ export const AdminUsersPage = () => {
       setIsLoading(true)
       setError(null)
       try {
-        const { data, error } = await supabase.from("users").select("*").order("created_at", { ascending: false })
+        const { data, error } = await getAllUsers()
 
         if (error) throw error
 
@@ -50,7 +53,7 @@ export const AdminUsersPage = () => {
         }
       } catch (error: any) {
         console.error("Ошибка при загрузке пользователей:", error)
-        setError("Не удалось загрузить пользователей. Про��ерьте подключение к интернету.")
+        setError("Не удалось загрузить пользователей")
       } finally {
         setIsLoading(false)
       }
@@ -59,20 +62,18 @@ export const AdminUsersPage = () => {
     fetchUsers()
   }, [])
 
-  // Фильтрация пользователей при изменении параметров поиска или фильтров
+  // Фильтрация пользователей
   useEffect(() => {
     const filtered = users.filter((user) => {
-      // Фильтр по поиску (имя или email)
       const matchesSearch =
         user.username.toLowerCase().includes(searchTerm.toLowerCase()) ||
         user.email.toLowerCase().includes(searchTerm.toLowerCase())
 
-      // Фильтр по роли
       const matchesRole = filterRole === "" || user.role === filterRole
-
-      // Здесь может быть фильтр по статусу (активен/заблокирован)
-      // Для демонстрации все пользователи активны
-      const matchesStatus = filterStatus === "" || filterStatus === "active"
+      const matchesStatus =
+        filterStatus === "" ||
+        (filterStatus === "active" && !user.is_blocked) ||
+        (filterStatus === "blocked" && user.is_blocked)
 
       return matchesSearch && matchesRole && matchesStatus
     })
@@ -80,14 +81,77 @@ export const AdminUsersPage = () => {
     setFilteredUsers(filtered)
   }, [users, searchTerm, filterRole, filterStatus])
 
-  // Форматирование даты регистрации
+  // Обработчики действий
+  const handleEditUser = (userData: UserType) => {
+    setEditingUser(userData)
+    setShowEditModal(true)
+  }
+
+  const handleUpdateUser = async (userId: string, updates: any) => {
+    try {
+      const { data, error } = await updateUserByAdmin(userId, updates)
+
+      if (error) throw error
+
+      // Обновляем локальное состояние
+      setUsers(users.map((u) => (u.id === userId ? { ...u, ...updates } : u)))
+      setShowEditModal(false)
+      setEditingUser(null)
+    } catch (err) {
+      console.error("Ошибка при обновлении пользователя:", err)
+      setError("Не удалось обновить пользователя")
+    }
+  }
+
+  const handleChangeRole = async (userId: string, newRole: "user" | "moderator" | "admin") => {
+    try {
+      const { error } = await updateUserRole(userId, newRole)
+
+      if (error) throw error
+
+      setUsers(users.map((u) => (u.id === userId ? { ...u, role: newRole } : u)))
+    } catch (err) {
+      console.error("Ошибка при изменении роли:", err)
+      setError("Не удалось изменить роль пользователя")
+    }
+  }
+
+  const handleBlockUser = async (userId: string, block: boolean) => {
+    try {
+      const { error } = await updateUserStatus(userId, block)
+
+      if (error) throw error
+
+      setUsers(users.map((u) => (u.id === userId ? { ...u, is_blocked: block } : u)))
+    } catch (err) {
+      console.error("Ошибка при блокировке пользователя:", err)
+      setError("Не удалось изменить статус пользователя")
+    }
+  }
+
+  const handleDeleteUser = async (userId: string) => {
+    if (!confirm("Вы уверены, что хотите удалить этого пользователя? Это действие нельзя отменить.")) {
+      return
+    }
+
+    try {
+      const { error } = await deleteUser(userId)
+
+      if (error) throw error
+
+      setUsers(users.filter((u) => u.id !== userId))
+    } catch (err) {
+      console.error("Ошибка при удалении пользователя:", err)
+      setError("Не удалось удалить пользователя")
+    }
+  }
+
   const formatDate = (dateString: string) => {
     const date = new Date(dateString)
     return date.toLocaleDateString("ru-RU")
   }
 
-  // Получение названия роли на русском
-  const getRoleName = (role: UserRole) => {
+  const getRoleName = (role: string) => {
     switch (role) {
       case "admin":
         return "Администратор"
@@ -100,8 +164,7 @@ export const AdminUsersPage = () => {
     }
   }
 
-  // Получение цвета фона для роли
-  const getRoleColor = (role: UserRole) => {
+  const getRoleColor = (role: string) => {
     switch (role) {
       case "admin":
         return "bg-red-100 text-red-800"
@@ -112,16 +175,6 @@ export const AdminUsersPage = () => {
       default:
         return "bg-gray-100 text-gray-800"
     }
-  }
-
-  const handleEditUser = (user: UserType) => {
-    setSelectedUser(user)
-    setIsEditModalOpen(true)
-  }
-
-  const handleUpdateUser = (updatedUser: UserType) => {
-    setUsers(users.map((user) => (user.id === updatedUser.id ? updatedUser : user)))
-    setFilteredUsers(filteredUsers.map((user) => (user.id === updatedUser.id ? updatedUser : user)))
   }
 
   return (
@@ -135,8 +188,8 @@ export const AdminUsersPage = () => {
         {error && (
           <div className="mb-6 p-4 bg-red-50 text-red-700 rounded-lg">
             {error}
-            <button onClick={() => window.location.reload()} className="ml-2 underline">
-              Попробовать снова
+            <button onClick={() => setError(null)} className="ml-2 underline">
+              Закрыть
             </button>
           </div>
         )}
@@ -227,100 +280,102 @@ export const AdminUsersPage = () => {
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
                   <tr>
-                    <th
-                      scope="col"
-                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                    >
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Пользователь
                     </th>
-                    <th
-                      scope="col"
-                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                    >
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Email
                     </th>
-                    <th
-                      scope="col"
-                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                    >
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Роль
                     </th>
-                    <th
-                      scope="col"
-                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                    >
-                      Дата регистрации
-                    </th>
-                    <th
-                      scope="col"
-                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                    >
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Статус
                     </th>
-                    <th
-                      scope="col"
-                      className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider"
-                    >
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Дата регистрации
+                    </th>
+                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Действия
                     </th>
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
-                  {filteredUsers.map((user) => (
-                    <tr key={user.id} className="hover:bg-gray-50">
+                  {filteredUsers.map((userData) => (
+                    <tr key={userData.id} className="hover:bg-gray-50">
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="flex items-center">
                           <div className="flex-shrink-0 h-10 w-10">
-                            {user.avatar_url ? (
+                            {userData.avatar_url ? (
                               <img
-                                className="h-10 w-10 rounded-full object-cover\"
-                                src={user.avatar_url || "/placeholder.svg"}
+                                className="h-10 w-10 rounded-full object-cover"
+                                src={userData.avatar_url || "/placeholder.svg"}
                                 alt=""
                               />
                             ) : (
                               <div className="h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-600">
-                                {user.username.charAt(0).toUpperCase()}
+                                {userData.username.charAt(0).toUpperCase()}
                               </div>
                             )}
                           </div>
                           <div className="ml-4">
-                            <div className="text-sm font-medium text-gray-900">{user.username}</div>
-                            <div className="text-sm text-gray-500">ID: {user.id.substring(0, 8)}...</div>
+                            <div className="text-sm font-medium text-gray-900">{userData.username}</div>
+                            <div className="text-sm text-gray-500">ID: {userData.id.substring(0, 8)}...</div>
                           </div>
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="text-sm text-gray-900">{user.email}</div>
+                        <div className="text-sm text-gray-900">{userData.email}</div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <select
+                          value={userData.role}
+                          onChange={(e) => handleChangeRole(userData.id, e.target.value as any)}
+                          className={`px-2 py-1 text-xs rounded-full border-0 ${getRoleColor(userData.role)}`}
+                        >
+                          <option value="user">Пользователь</option>
+                          <option value="moderator">Модератор</option>
+                          <option value="admin">Администратор</option>
+                        </select>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <span
-                          className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${getRoleColor(user.role)}`}
+                          className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                            userData.is_blocked ? "bg-red-100 text-red-800" : "bg-green-100 text-green-800"
+                          }`}
                         >
-                          {getRoleName(user.role)}
+                          {userData.is_blocked ? "Заблокирован" : "Активен"}
                         </span>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {formatDate(user.created_at)}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <span className="px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">
-                          Активен
-                        </span>
+                        {formatDate(userData.created_at)}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                         <div className="flex justify-end items-center space-x-2">
                           <button
-                            onClick={() => handleEditUser(user)}
+                            onClick={() => handleEditUser(userData)}
                             className="text-blue-400 hover:text-blue-600 p-1 rounded-md hover:bg-blue-50"
                             title="Редактировать"
                           >
                             <Edit size={18} />
                           </button>
                           <button
-                            className="text-red-400 hover:text-red-600 p-1 rounded-md hover:bg-red-50"
-                            title="Заблокировать"
+                            onClick={() => handleBlockUser(userData.id, !userData.is_blocked)}
+                            className={`p-1 rounded-md ${
+                              userData.is_blocked
+                                ? "text-green-400 hover:text-green-600 hover:bg-green-50"
+                                : "text-red-400 hover:text-red-600 hover:bg-red-50"
+                            }`}
+                            title={userData.is_blocked ? "Разблокировать" : "Заблокировать"}
                           >
                             <Lock size={18} />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteUser(userData.id)}
+                            className="text-red-400 hover:text-red-600 p-1 rounded-md hover:bg-red-50"
+                            title="Удалить"
+                          >
+                            <Trash2 size={18} />
                           </button>
                         </div>
                       </td>
@@ -329,90 +384,132 @@ export const AdminUsersPage = () => {
                 </tbody>
               </table>
             </div>
-
-            <div className="bg-gray-50 px-4 py-3 flex items-center justify-between sm:px-6">
-              <div className="flex-1 flex justify-between sm:hidden">
-                <Button variant="outline" size="sm">
-                  Назад
-                </Button>
-                <Button variant="outline" size="sm">
-                  Вперед
-                </Button>
-              </div>
-              <div className="hidden sm:flex-1 sm:flex sm:items-center sm:justify-between">
-                <div>
-                  <p className="text-sm text-gray-700">
-                    Показано <span className="font-medium">1</span> -{" "}
-                    <span className="font-medium">{filteredUsers.length}</span> из{" "}
-                    <span className="font-medium">{users.length}</span> пользователей
-                  </p>
-                </div>
-                <div>
-                  <nav className="relative z-0 inline-flex rounded-md shadow-sm -space-x-px" aria-label="Pagination">
-                    <a
-                      href="#"
-                      className="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50"
-                    >
-                      <span className="sr-only">Предыдущая</span>
-                      <svg
-                        className="h-5 w-5"
-                        xmlns="http://www.w3.org/2000/svg"
-                        viewBox="0 0 20 20"
-                        fill="currentColor"
-                        aria-hidden="true"
-                      >
-                        <path
-                          fillRule="evenodd"
-                          d="M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z"
-                          clipRule="evenodd"
-                        />
-                      </svg>
-                    </a>
-                    <a
-                      href="#"
-                      className="relative inline-flex items-center px-4 py-2 border border-gray-300 bg-white text-sm font-medium text-gray-700 hover:bg-gray-50"
-                    >
-                      1
-                    </a>
-                    <a
-                      href="#"
-                      className="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50"
-                    >
-                      <span className="sr-only">Следующая</span>
-                      <svg
-                        className="h-5 w-5"
-                        xmlns="http://www.w3.org/2000/svg"
-                        viewBox="0 0 20 20"
-                        fill="currentColor"
-                        aria-hidden="true"
-                      >
-                        <path
-                          fillRule="evenodd"
-                          d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z"
-                          clipRule="evenodd"
-                        />
-                      </svg>
-         
-         
-                    </a>
-                  </nav>
-                </div>
-              </div>
-            </div>
           </div>
         )}
+
+        {/* Модальное окно редактирования */}
+        {showEditModal && editingUser && (
+          <EditUserModal
+            user={editingUser}
+            onSave={(updates) => handleUpdateUser(editingUser.id, updates)}
+            onClose={() => {
+              setShowEditModal(false)
+              setEditingUser(null)
+            }}
+          />
+        )}
       </div>
-      {selectedUser && (
-        <EditUserModal
-          user={selectedUser}
-          isOpen={isEditModalOpen}
-          onClose={() => {
-            setIsEditModalOpen(false)
-            setSelectedUser(null)
-          }}
-          onUpdate={handleUpdateUser}
-        />
-      )}
     </Layout>
+  )
+}
+
+// Компонент модального окна редактирования
+const EditUserModal = ({
+  user,
+  onSave,
+  onClose,
+}: {
+  user: UserType
+  onSave: (updates: any) => void
+  onClose: () => void
+}) => {
+  const [formData, setFormData] = useState({
+    username: user.username,
+    email: user.email,
+    full_name: user.full_name || "",
+    weight: user.weight || "",
+    height: user.height || "",
+    goal: user.goal || "",
+  })
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    onSave({
+      username: formData.username,
+      email: formData.email,
+      full_name: formData.full_name || null,
+      weight: formData.weight ? Number(formData.weight) : null,
+      height: formData.height ? Number(formData.height) : null,
+      goal: formData.goal || null,
+    })
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4">
+        <div className="flex items-center justify-between p-6 border-b border-gray-200">
+          <h2 className="text-xl font-semibold text-gray-900">Редактировать пользователя</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+            ×
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Имя пользователя</label>
+            <Input
+              type="text"
+              value={formData.username}
+              onChange={(e) => setFormData({ ...formData, username: e.target.value })}
+              required
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+            <Input
+              type="email"
+              value={formData.email}
+              onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+              required
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Полное имя</label>
+            <Input
+              type="text"
+              value={formData.full_name}
+              onChange={(e) => setFormData({ ...formData, full_name: e.target.value })}
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Вес (кг)</label>
+              <Input
+                type="number"
+                value={formData.weight}
+                onChange={(e) => setFormData({ ...formData, weight: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Рост (см)</label>
+              <Input
+                type="number"
+                value={formData.height}
+                onChange={(e) => setFormData({ ...formData, height: e.target.value })}
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Цель</label>
+            <Input
+              type="text"
+              value={formData.goal}
+              onChange={(e) => setFormData({ ...formData, goal: e.target.value })}
+            />
+          </div>
+
+          <div className="flex justify-end space-x-3 pt-4">
+            <Button type="button" variant="outline" onClick={onClose}>
+              Отмена
+            </Button>
+            <Button type="submit">Сохранить</Button>
+          </div>
+        </form>
+      </div>
+    </div>
   )
 }
