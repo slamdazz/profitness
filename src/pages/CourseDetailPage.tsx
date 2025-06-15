@@ -94,7 +94,6 @@ export const CourseDetailPage = () => {
         const { isFavorite: userFavorite } = await isCourseFavorite(user.id, id);
         setIsFavorite(userFavorite);
         
-        /
         setCourse(courseData);
         setWorkout(workoutData);
         setUserProgress(progressData);
